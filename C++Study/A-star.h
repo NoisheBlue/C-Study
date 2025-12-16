@@ -5,6 +5,7 @@
 #include <queue>
 #include <algorithm> // reverse
 #include <limits> //infinityを使うため
+#include <iostream>
 
 
 struct Vec2i
@@ -141,6 +142,9 @@ public:
 	// return:
 	//   true  = 経路が見つかった
 	//   false = 見つからなかった（壁で塞がれてる等）
+
+	int AstarAlgo();
+
 	bool FindPath(const GridMap& map, const Vec2i& start, const Vec2i& goal,
 		std::vector<Vec2i>& outPath)
 	{
@@ -211,10 +215,10 @@ public:
 		const int goalIdx = ToIndex(goal.x, goal.y, w);
 
 		//スタートからスタートへのコストは0
-		nodes[startIdx].h = 0.0f;
+		nodes[startIdx].g = 0.0f;
 
 		// スタート→ゴールの「予想距離」
-		nodes[start].h = HeuristicManhattan(start, goal);
+		nodes[startIdx].h = HeuristicManhattan(start, goal);
 
 		// スタートは親が存在しない
 		nodes[startIdx].parent = { -1, -1 };
@@ -227,7 +231,158 @@ public:
 		//==============================
 		const Vec2i dirs[4] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
 
+		//==============================
+	 // 6) 探索ループ：Openが空になるまで続ける
+	 //==============================
+		while (!open.empty())
+		{
+			// (A) Openから「今一番有望なマス」を取り出す（fが最小）
+			const int currentIdx = open.top().idx;
+			open.pop();
 
+			// priority_queue は「更新」ができないので、
+			// 古い情報が残ることがある（同じidxが複数回入る）。
+			// その場合、すでに確定済みなら捨てる。
+			if (closed[currentIdx]) continue;
+
+			// (B) このマスは最短確定！
+			closed[currentIdx] = true;
+
+			// (C) ゴールに到達したら、親を辿って道を復元して終わり
+			if (currentIdx == goalIdx)
+			{
+				ReconstructPath(nodes, w, start, goal, outPath);
+				return true;
+			}
+
+			// 今いるマスの座標
+			const Vec2i currentPos = nodes[currentIdx].pos;
+
+			// (D) 周囲（上下左右）を調べる
+			for (const auto& d : dirs)
+			{
+				Vec2i nextPos{ currentPos.x + d.x, currentPos.y + d.y };
+
+				// 壁 or 範囲外なら行けない
+				if (!map.Passable(nextPos.x, nextPos.y)) continue;
+
+				const int nextIdx = ToIndex(nextPos.x, nextPos.y, w);
+
+				// すでに確定したマスなら調べる必要なし
+				if (closed[nextIdx]) continue;
+
+				// (E) current→next へ進む場合のコスト g を計算
+				// 今回は「1マス移動＝コスト1」
+				// ※地形コストを入れたいならここを拡張する
+				const float tentativeG = nodes[currentIdx].g + 1.0f;
+
+				// (F) まだ未訪問（g=∞）か、より良い経路（gが小さい）が見つかったら更新
+				if (tentativeG < nodes[nextIdx].g)
+				{
+					// g を更新
+					nodes[nextIdx].g = tentativeG;
+
+					// h を更新（予想距離）
+					nodes[nextIdx].h = HeuristicManhattan(nextPos, goal);
+
+					// 親を更新（道を復元するために「どこから来たか」保存）
+					nodes[nextIdx].parent = currentPos;
+
+					// Openへ追加（次の候補にする）
+					open.push({ nextIdx, nodes[nextIdx].f() });
+				}
+			}
+		}
+
+		// Openが空になった＝ゴールに到達できなかった
+		return false;
+	}
+
+private:
+	//==============================
+	// 親を辿って経路を作る関数
+	//==============================
+	// goal から parent を辿って start に戻る
+	// そのままだと goal→start の逆順なので reverse する
+	void ReconstructPath(const std::vector<Node>& nodes, int width,
+		const Vec2i& start, const Vec2i& goal,
+		std::vector<Vec2i>& outPath)
+	{
+		outPath.clear();
+
+		// まずゴールから始める
+		Vec2i cur = goal;
+		outPath.push_back(cur);
+
+		// start に着くまで親を辿る
+		while (!(cur == start))
+		{
+			const int idx = ToIndex(cur.x, cur.y, width);
+			const Vec2i p = nodes[idx].parent;
+
+			// 親がない＝復元できない（保険）
+			if (p.x == -1 && p.y == -1) break;
+
+			cur = p;
+			outPath.push_back(cur);
+		}
+
+		// goal→start になっているので反転して start→goal にする
+		std::reverse(outPath.begin(), outPath.end());
 	}
 };
 
+
+// path の中に (x,y) があるか調べる（簡単版：線形探索）
+// ※後で高速化もできるけど、まずは分かりやすさ優先
+static bool IsInPath(const std::vector<Vec2i>& path, int x, int y)
+{
+	for (const auto& p : path)
+	{
+		if (p.x == x && p.y == y) return true;
+	}
+	return false;
+}
+
+// マップと経路をコンソールに表示する
+static void PrintMapWithPath(const GridMap& map,
+	const Vec2i& start,
+	const Vec2i& goal,
+	const std::vector<Vec2i>& path)
+{
+	const int w = map.Width();
+	const int h = map.Height();
+
+	// 上から下へ（y=0が上の方が見やすいなら逆にしてOK）
+	for (int y = 0; y < h; ++y)
+	{
+		for (int x = 0; x < w; ++x)
+		{
+			// 1) start / goal を最優先で表示
+			if (x == start.x && y == start.y)
+			{
+				std::cout << 'S';
+			}
+			else if (x == goal.x && y == goal.y)
+			{
+				std::cout << 'G';
+			}
+			// 2) 壁なら #
+			else if (map.IsWall(x, y))
+			{
+				std::cout << '#';
+			}
+			// 3) 経路に含まれていれば *
+			else if (IsInPath(path, x, y))
+			{
+				std::cout << '*';
+			}
+			// 4) それ以外は通路 .
+			else
+			{
+				std::cout << '.';
+			}
+		}
+		std::cout << "\n";
+	}
+}
